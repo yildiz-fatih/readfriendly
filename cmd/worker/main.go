@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -14,18 +15,10 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/joho/godotenv"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"github.com/starwalkn/gotenberg-go-client/v8"
 	"github.com/yildiz-fatih/readfriendly/internal/models"
 	"github.com/yildiz-fatih/readfriendly/internal/services"
 )
-
-type application struct {
-	logger           *slog.Logger
-	httpClient       *http.Client
-	clippingModel    *models.ClippingModel
-	s3PresignClient  *s3.PresignClient
-	s3Bucket         string
-	rabbitConnection *amqp.Connection
-}
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -33,9 +26,15 @@ func main() {
 	_ = godotenv.Load()
 
 	// get environment variables
-	port := os.Getenv("PORT")
-	if port == "" {
-		logger.Error("PORT is not set")
+	gotenbergURL := os.Getenv("GOTENBERG_URL")
+	if gotenbergURL == "" {
+		logger.Error("GOTENBERG_URL is not set")
+		os.Exit(1)
+	}
+
+	pandocURL := os.Getenv("PANDOC_URL")
+	if pandocURL == "" {
+		logger.Error("PANDOC_URL is not set")
 		os.Exit(1)
 	}
 
@@ -62,6 +61,13 @@ func main() {
 	// http client
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 
+	// gotenberg client
+	gotenbergClient, err := gotenberg.NewClient(gotenbergURL, httpClient)
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
+	}
+
 	// postgres
 	db, err := sql.Open("pgx", dbURL)
 	if err != nil {
@@ -77,6 +83,8 @@ func main() {
 	}
 	logger.Info("connected to database")
 
+	clippingModel := &models.ClippingModel{DB: db}
+
 	// s3
 	sdkConfig, err := config.LoadDefaultConfig(context.Background())
 	if err != nil {
@@ -89,7 +97,13 @@ func main() {
 		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
 	})
 
-	s3PresignClient := s3.NewPresignClient(s3Client)
+	clipper := &services.Clipper{
+		HttpClient:      httpClient,
+		GotenbergClient: gotenbergClient,
+		PandocURL:       pandocURL,
+		S3Client:        s3Client,
+		S3Bucket:        s3BucketName,
+	}
 
 	// rabbitmq
 	rabbitConn, err := amqp.Dial(rabbitURL)
@@ -99,14 +113,14 @@ func main() {
 	}
 	defer rabbitConn.Close()
 
-	ch, err := rabbitConn.Channel()
+	rabbitCh, err := rabbitConn.Channel()
 	if err != nil {
 		logger.Error(err.Error())
 		os.Exit(1)
 	}
-	defer ch.Close()
+	defer rabbitCh.Close()
 
-	_, err = ch.QueueDeclare(
+	q, err := rabbitCh.QueueDeclare(
 		services.QueueName, // name
 		true,               // durability
 		false,              // delete when unused
@@ -121,24 +135,55 @@ func main() {
 		os.Exit(1)
 	}
 
-	app := &application{
-		logger:           logger,
-		httpClient:       httpClient,
-		clippingModel:    &models.ClippingModel{DB: db},
-		s3PresignClient:  s3PresignClient,
-		s3Bucket:         s3BucketName,
-		rabbitConnection: rabbitConn,
+	err = rabbitCh.Qos(
+		1,     // prefetch count
+		0,     // prefetch size
+		false, // global
+	)
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
 	}
 
-	// server
-	server := &http.Server{
-		Addr:     ":" + port,
-		Handler:  app.newRouter(),
-		ErrorLog: slog.NewLogLogger(logger.Handler(), slog.LevelError),
+	msgs, err := rabbitCh.Consume(
+		q.Name, // queue
+		"",     // consumer
+		false,  // auto-ack
+		false,  // exclusive
+		false,  // no-local
+		false,  // no-wait
+		nil,    // args
+	)
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
 	}
 
-	logger.Info("starting server", "address", server.Addr)
-	err = server.ListenAndServe() // err is always non-nil
-	logger.Error(err.Error())
-	os.Exit(1)
+	logger.Info("starting worker")
+
+	for d := range msgs {
+		var payload services.ClippingPayload
+		err := json.Unmarshal(d.Body, &payload)
+		if err != nil {
+			logger.Error(err.Error())
+			continue
+		}
+
+		err = clipper.HandleClipping(context.Background(), &payload)
+		if err != nil {
+			rabbitCh.Nack(d.DeliveryTag, false, false) // drop if fails (TODO)
+			// update status in database
+			err = clippingModel.Update(payload.ID, "failed")
+			if err != nil {
+				logger.Error(err.Error())
+			}
+			continue
+		}
+		rabbitCh.Ack(d.DeliveryTag, false)
+		// update status in database
+		err = clippingModel.Update(payload.ID, "completed")
+		if err != nil {
+			logger.Error(err.Error())
+		}
+	}
 }

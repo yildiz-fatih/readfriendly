@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS clippings;
+DROP TYPE IF EXISTS task_status;

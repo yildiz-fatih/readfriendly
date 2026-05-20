@@ -1,19 +1,17 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"time"
 
-	"codeberg.org/readeck/go-readability/v2"
-	"github.com/starwalkn/gotenberg-go-client/v8"
-	"github.com/starwalkn/gotenberg-go-client/v8/document"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/google/uuid"
+	amqp "github.com/rabbitmq/amqp091-go"
+	"github.com/yildiz-fatih/readfriendly/internal/models"
+	"github.com/yildiz-fatih/readfriendly/internal/services"
 )
 
 func (app *application) getHealth(w http.ResponseWriter, r *http.Request) {
@@ -54,124 +52,107 @@ func (app *application) postClipping(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// fetch html
-	fetchReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, req.URL, nil)
-	if err != nil {
-		app.serverError(w, err)
-		return
-	}
-	fetchReq.Header.Set("User-Agent", "readfriendly/1.0")
+	// make a unique id for the task
+	id := uuid.NewString()
 
-	fetchRes, err := app.httpClient.Do(fetchReq)
-	if err != nil {
-		app.serverError(w, err)
-		return
+	// enqueue the task
+	payload := services.ClippingPayload{
+		ID:     id,
+		URL:    req.URL,
+		Format: req.Format,
 	}
-	defer fetchRes.Body.Close()
-
-	// clean html
-	parsedURL, err := url.Parse(req.URL)
-	if err != nil {
-		app.serverError(w, err)
-		return
-	}
-	article, err := readability.FromReader(fetchRes.Body, parsedURL)
+	payloadJson, err := json.Marshal(payload)
 	if err != nil {
 		app.serverError(w, err)
 		return
 	}
 
-	var buf bytes.Buffer
-	err = article.RenderHTML(&buf)
+	rabbitCh, err := app.rabbitConnection.Channel()
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	defer rabbitCh.Close()
+
+	err = rabbitCh.PublishWithContext(r.Context(),
+		"",                 // exchange
+		services.QueueName, // routing key
+		false,              // mandatory
+		false,
+		amqp.Publishing{
+			DeliveryMode: amqp.Persistent,
+			ContentType:  "application/json",
+			Body:         payloadJson,
+		})
 	if err != nil {
 		app.serverError(w, err)
 		return
 	}
 
-	title := article.Title()
-	wrappedHTML := fmt.Sprintf(
-		"<html><head><title>%s</title></head><body>%s</body></html>",
-		title, buf.String(),
-	)
-	cleanHTML := []byte(wrappedHTML)
+	// write to database
+	clipping, err := app.clippingModel.Insert(id, payload.Format)
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
 
-	switch req.Format {
-	case "pdf":
-		pdfReader, err := app.htmlToPDF(r.Context(), cleanHTML)
-		if err != nil {
-			app.serverError(w, err)
-			return
-		}
-		defer pdfReader.Close()
-
-		pdfBytes, err := io.ReadAll(pdfReader)
-		if err != nil {
-			app.serverError(w, err)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/pdf")
-		w.Write(pdfBytes)
-	case "epub":
-		epubReader, err := app.htmlToEPUB(r.Context(), cleanHTML)
-		if err != nil {
-			app.serverError(w, err)
-			return
-		}
-		defer epubReader.Close()
-
-		epubBytes, err := io.ReadAll(epubReader)
-		if err != nil {
-			app.serverError(w, err)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/epub+zip")
-		w.Write(epubBytes)
-	case "html":
-		w.Header().Set("Content-Type", "text/html")
-		_, err := w.Write(cleanHTML)
-		if err != nil {
-			app.logger.Error(err.Error())
-		}
+	// return immediately
+	type postClippingResponse struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	res := postClippingResponse{
+		ID:     id,
+		Status: clipping.Status,
+	}
+	err = writeJSON(w, http.StatusAccepted, nil, res)
+	if err != nil {
+		app.serverError(w, err)
+		return
 	}
 }
 
-func (app *application) htmlToPDF(ctx context.Context, htmlContent []byte) (io.ReadCloser, error) {
-	doc, err := document.FromBytes("index.html", htmlContent)
+func (app *application) getClipping(w http.ResponseWriter, r *http.Request) {
+	// get url path
+	id := r.PathValue("id")
+
+	// check task status
+	clipping, err := app.clippingModel.Get(id)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, models.ErrNotFound) {
+			app.clientError(w, http.StatusNotFound, "clipping not found")
+			return
+		}
+		app.serverError(w, err)
+		return
 	}
 
-	res, err := app.gotenbergClient.Send(ctx, gotenberg.NewHTMLRequest(doc))
-	if err != nil {
-		return nil, err
-	}
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		res.Body.Close()
-		return nil, errors.New("gotenberg failed with status code: " + res.Status)
-	}
+	switch clipping.Status {
+	case "completed":
+		presignedReq, err := app.s3PresignClient.PresignGetObject(r.Context(), &s3.GetObjectInput{
+			Bucket: aws.String(app.s3Bucket),
+			Key:    aws.String(id + "." + clipping.Format),
+		}, func(opts *s3.PresignOptions) {
+			opts.Expires = time.Duration(1 * time.Hour)
+		})
+		if err != nil {
+			app.serverError(w, err)
+			return
+		}
 
-	return res.Body, nil
-}
-
-func (app *application) htmlToEPUB(ctx context.Context, htmlContent []byte) (io.ReadCloser, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, app.pandocURL+"/api/convert/from/html/to/epub", bytes.NewReader(htmlContent))
-	if err != nil {
-		return nil, err
+		writeJSON(w, 200, nil, map[string]string{
+			"download_url": presignedReq.URL,
+		})
+		return
+	case "failed":
+		writeJSON(w, http.StatusInternalServerError, nil, map[string]string{
+			"status": "failed",
+		})
+		return
+	case "pending":
+		writeJSON(w, http.StatusAccepted, nil, map[string]string{
+			"status": "pending",
+		})
+		return
 	}
-
-	req.Header.Set("Content-Type", "text/html")
-	req.Header.Set("Content-Disposition", `attachment; filename="index.html"`)
-
-	res, err := app.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		res.Body.Close()
-		return nil, errors.New("pandoc failed with status code: " + res.Status)
-	}
-
-	return res.Body, nil
 }
