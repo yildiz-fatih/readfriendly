@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -16,6 +17,7 @@ import (
 	"github.com/joho/godotenv"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/starwalkn/gotenberg-go-client/v8"
+	"github.com/wneessen/go-mail"
 	"github.com/yildiz-fatih/readfriendly/internal/models"
 	"github.com/yildiz-fatih/readfriendly/internal/services"
 )
@@ -55,6 +57,21 @@ func main() {
 		logger.Error("RABBITMQ_URL is not set")
 		os.Exit(1)
 	}
+
+	smtpHost := os.Getenv("SMTP_HOST")
+	smtpPort := mail.DefaultPortTLS // sensible default
+	smtpPortStr := os.Getenv("SMTP_PORT")
+	if smtpPortStr != "" {
+		var err error
+		smtpPort, err = strconv.Atoi(smtpPortStr)
+		if err != nil {
+			logger.Error("SMTP_PORT is not a valid integer")
+			os.Exit(1)
+		}
+	}
+	smtpUser := os.Getenv("SMTP_USER")
+	smtpPass := os.Getenv("SMTP_PASS")
+	smtpFrom := os.Getenv("SMTP_FROM")
 
 	// init
 
@@ -97,12 +114,30 @@ func main() {
 		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
 	})
 
+	// email
+	var mailClient *mail.Client
+	if smtpHost != "" {
+		mailClient, err = mail.NewClient(
+			smtpHost,
+			mail.WithSMTPAuth(mail.SMTPAuthPlain),
+			mail.WithPort(smtpPort),
+			mail.WithUsername(smtpUser),
+			mail.WithPassword(smtpPass),
+		)
+		if err != nil {
+			logger.Error(err.Error())
+			os.Exit(1)
+		}
+	}
+
 	clipper := &services.Clipper{
 		HttpClient:      httpClient,
 		GotenbergClient: gotenbergClient,
 		PandocURL:       pandocURL,
 		S3Client:        s3Client,
 		S3Bucket:        s3BucketName,
+		MailClient:      mailClient,
+		SMTPFrom:        smtpFrom,
 	}
 
 	// rabbitmq

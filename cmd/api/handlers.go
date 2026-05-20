@@ -36,6 +36,7 @@ func (app *application) postClipping(w http.ResponseWriter, r *http.Request) {
 	type postClippingRequest struct {
 		URL    string `json:"url"`
 		Format string `json:"format"` // 'pdf', 'epub', 'html'
+		Email  string `json:"email"`
 	}
 	var req postClippingRequest
 
@@ -60,6 +61,7 @@ func (app *application) postClipping(w http.ResponseWriter, r *http.Request) {
 		ID:     id,
 		URL:    req.URL,
 		Format: req.Format,
+		Email:  req.Email,
 	}
 	payloadJson, err := json.Marshal(payload)
 	if err != nil {

@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/starwalkn/gotenberg-go-client/v8"
 	"github.com/starwalkn/gotenberg-go-client/v8/document"
+	"github.com/wneessen/go-mail"
 )
 
 const (
@@ -26,15 +27,23 @@ type Clipper struct {
 	PandocURL       string
 	S3Client        *s3.Client
 	S3Bucket        string
+	MailClient      *mail.Client
+	SMTPFrom        string
 }
 
 type ClippingPayload struct {
 	ID     string `json:"id"`
 	URL    string `json:"url"`
 	Format string `json:"format"`
+	Email  string `json:"email"`
 }
 
 func (c *Clipper) HandleClipping(ctx context.Context, payload *ClippingPayload) error {
+	// fail fast if email requested but SMTP not configured
+	if payload.Email != "" && c.MailClient == nil {
+		return errors.New("SMTP is not configured")
+	}
+
 	// fetch & clean
 	cleanHTML, err := c.fetchAndClean(ctx, payload.URL)
 	if err != nil {
@@ -83,6 +92,15 @@ func (c *Clipper) HandleClipping(ctx context.Context, payload *ClippingPayload) 
 	})
 	if err != nil {
 		return err
+	}
+
+	// email
+	if payload.Email != "" {
+		filename := fmt.Sprintf("%s.%s", payload.ID, payload.Format)
+		err = c.sendEmail(payload.Email, filename, fileBytes)
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -178,4 +196,23 @@ func (c *Clipper) htmlToEPUB(ctx context.Context, htmlContent []byte) (io.ReadCl
 	}
 
 	return res.Body, nil
+}
+
+func (c *Clipper) sendEmail(deliverTo string, filename string, fileBytes []byte) error {
+	message := mail.NewMsg()
+	err := message.From(c.SMTPFrom)
+	if err != nil {
+		return err
+	}
+	err = message.To(deliverTo)
+	if err != nil {
+		return err
+	}
+	message.Subject("Your clipping is ready")
+	err = message.AttachReader(filename, bytes.NewReader(fileBytes))
+	if err != nil {
+		return err
+	}
+
+	return c.MailClient.DialAndSend(message)
 }
