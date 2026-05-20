@@ -5,6 +5,7 @@ go 1.26.3
 require (
 	codeberg.org/readeck/go-readability/v2 v2.1.1
 	github.com/joho/godotenv v1.5.1
+	github.com/starwalkn/gotenberg-go-client/v8 v8.12.0
 )
 
 require (

@@ -7,11 +7,13 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/starwalkn/gotenberg-go-client/v8"
 )
 
 type application struct {
-	logger     *slog.Logger
-	httpClient *http.Client
+	logger          *slog.Logger
+	httpClient      *http.Client
+	gotenbergClient *gotenberg.Client
 }
 
 func main() {
@@ -25,9 +27,24 @@ func main() {
 		os.Exit(1)
 	}
 
+	gotenbergURL := os.Getenv("GOTENBERG_URL")
+	if gotenbergURL == "" {
+		logger.Error("GOTENBERG_URL is not set")
+		os.Exit(1)
+	}
+
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+
+	gotenbergClient, err := gotenberg.NewClient(gotenbergURL, httpClient)
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
+	}
+
 	app := &application{
-		logger:     logger,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		logger:          logger,
+		httpClient:      httpClient,
+		gotenbergClient: gotenbergClient,
 	}
 
 	server := &http.Server{
@@ -37,7 +54,7 @@ func main() {
 	}
 
 	logger.Info("starting server", "address", server.Addr)
-	err := server.ListenAndServe() // err is always non-nil
+	err = server.ListenAndServe() // err is always non-nil
 	logger.Error(err.Error())
 	os.Exit(1)
 }
