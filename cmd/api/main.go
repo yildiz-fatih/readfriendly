@@ -4,12 +4,14 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/joho/godotenv"
 )
 
 type application struct {
-	logger *slog.Logger
+	logger     *slog.Logger
+	httpClient *http.Client
 }
 
 func main() {
@@ -24,7 +26,8 @@ func main() {
 	}
 
 	app := &application{
-		logger: logger,
+		logger:     logger,
+		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 
 	server := &http.Server{
