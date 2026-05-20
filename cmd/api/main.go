@@ -14,6 +14,7 @@ type application struct {
 	logger          *slog.Logger
 	httpClient      *http.Client
 	gotenbergClient *gotenberg.Client
+	pandocURL       string
 }
 
 func main() {
@@ -33,6 +34,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	pandocURL := os.Getenv("PANDOC_URL")
+	if pandocURL == "" {
+		logger.Error("PANDOC_URL is not set")
+		os.Exit(1)
+	}
+
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 
 	gotenbergClient, err := gotenberg.NewClient(gotenbergURL, httpClient)
@@ -45,6 +52,7 @@ func main() {
 		logger:          logger,
 		httpClient:      httpClient,
 		gotenbergClient: gotenbergClient,
+		pandocURL:       pandocURL,
 	}
 
 	server := &http.Server{

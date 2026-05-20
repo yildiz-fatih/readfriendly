@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -36,7 +37,7 @@ func (app *application) postClipping(w http.ResponseWriter, r *http.Request) {
 	// get request body
 	type postClippingRequest struct {
 		URL    string `json:"url"`
-		Format string `json:"format"` // 'pdf', 'html'
+		Format string `json:"format"` // 'pdf', 'epub', 'html'
 	}
 	var req postClippingRequest
 
@@ -48,7 +49,7 @@ func (app *application) postClipping(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	// validate format
-	if req.Format != "pdf" && req.Format != "html" {
+	if req.Format != "pdf" && req.Format != "epub" && req.Format != "html" {
 		app.clientError(w, http.StatusBadRequest, "unsupported format")
 		return
 	}
@@ -86,7 +87,13 @@ func (app *application) postClipping(w http.ResponseWriter, r *http.Request) {
 		app.serverError(w, err)
 		return
 	}
-	cleanHTML := buf.Bytes()
+
+	title := article.Title()
+	wrappedHTML := fmt.Sprintf(
+		"<html><head><title>%s</title></head><body>%s</body></html>",
+		title, buf.String(),
+	)
+	cleanHTML := []byte(wrappedHTML)
 
 	switch req.Format {
 	case "pdf":
@@ -105,6 +112,22 @@ func (app *application) postClipping(w http.ResponseWriter, r *http.Request) {
 
 		w.Header().Set("Content-Type", "application/pdf")
 		w.Write(pdfBytes)
+	case "epub":
+		epubReader, err := app.htmlToEPUB(r.Context(), cleanHTML)
+		if err != nil {
+			app.serverError(w, err)
+			return
+		}
+		defer epubReader.Close()
+
+		epubBytes, err := io.ReadAll(epubReader)
+		if err != nil {
+			app.serverError(w, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/epub+zip")
+		w.Write(epubBytes)
 	case "html":
 		w.Header().Set("Content-Type", "text/html")
 		_, err := w.Write(cleanHTML)
@@ -127,6 +150,27 @@ func (app *application) htmlToPDF(ctx context.Context, htmlContent []byte) (io.R
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		res.Body.Close()
 		return nil, errors.New("gotenberg failed with status code: " + res.Status)
+	}
+
+	return res.Body, nil
+}
+
+func (app *application) htmlToEPUB(ctx context.Context, htmlContent []byte) (io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, app.pandocURL+"/api/convert/from/html/to/epub", bytes.NewReader(htmlContent))
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Content-Type", "text/html")
+	req.Header.Set("Content-Disposition", `attachment; filename="index.html"`)
+
+	res, err := app.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		res.Body.Close()
+		return nil, errors.New("pandoc failed with status code: " + res.Status)
 	}
 
 	return res.Body, nil
