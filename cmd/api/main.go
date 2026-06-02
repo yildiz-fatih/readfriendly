@@ -18,6 +18,13 @@ import (
 	"github.com/yildiz-fatih/readfriendly/internal/services"
 )
 
+const (
+	readHeaderTimeout = 5 * time.Second
+	readTimeout       = 10 * time.Second
+	writeTimeout      = 20 * time.Second
+	idleTimeout       = 120 * time.Second
+)
+
 type application struct {
 	logger           *slog.Logger
 	httpClient       *http.Client
@@ -132,9 +139,13 @@ func main() {
 
 	// server
 	server := &http.Server{
-		Addr:     ":" + port,
-		Handler:  app.newRouter(),
-		ErrorLog: slog.NewLogLogger(logger.Handler(), slog.LevelError),
+		Addr:              ":" + port,
+		Handler:           app.newRouter(),
+		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
 	}
 
 	logger.Info("starting server", "address", server.Addr)
