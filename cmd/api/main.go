@@ -138,18 +138,9 @@ func main() {
 	}
 
 	// server
-	server := &http.Server{
-		Addr:              ":" + port,
-		Handler:           app.newRouter(),
-		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
-		ReadHeaderTimeout: readHeaderTimeout,
-		ReadTimeout:       readTimeout,
-		WriteTimeout:      writeTimeout,
-		IdleTimeout:       idleTimeout,
+	err = app.serve(":" + port)
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
 	}
-
-	logger.Info("starting server", "address", server.Addr)
-	err = server.ListenAndServe() // err is always non-nil
-	logger.Error(err.Error())
-	os.Exit(1)
 }
