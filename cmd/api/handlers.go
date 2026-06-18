@@ -14,6 +14,22 @@ import (
 	"github.com/yildiz-fatih/readfriendly/internal/services"
 )
 
+type postClippingRequest struct {
+	URL    string                `json:"url"`
+	Format models.ClippingFormat `json:"format"`
+	Email  string                `json:"email"` // optional
+}
+
+type postClippingResponse struct {
+	ID     string                `json:"id"`
+	Status models.ClippingStatus `json:"status"`
+}
+
+type getClippingResponse struct {
+	Status      models.ClippingStatus `json:"status,omitempty"`
+	DownloadURL string                `json:"download_url,omitempty"`
+}
+
 func (app *application) getHealth(w http.ResponseWriter, r *http.Request) {
 	type healthResponse struct {
 		Status    string    `json:"status"`
@@ -31,13 +47,16 @@ func (app *application) getHealth(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// @Summary	Queues a webpage to be clipped and delivered to an email address in a specified format
+// @Accept		json
+// @Produce	json
+// @Param		request	body		postClippingRequest	true	"Clipping request"
+// @Success	202		{object}	postClippingResponse
+// @Failure	400		{object}	map[string]string
+// @Failure	500		{object}	map[string]string
+// @Router		/clippings [post]
 func (app *application) postClipping(w http.ResponseWriter, r *http.Request) {
 	// get request body
-	type postClippingRequest struct {
-		URL    string `json:"url"`
-		Format string `json:"format"` // 'pdf', 'epub', 'html'
-		Email  string `json:"email"`
-	}
 	var req postClippingRequest
 
 	err := json.NewDecoder(r.Body).Decode(&req)
@@ -48,7 +67,7 @@ func (app *application) postClipping(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	// validate format
-	if req.Format != "pdf" && req.Format != "epub" && req.Format != "html" {
+	if req.Format != models.FormatPDF && req.Format != models.FormatEPUB && req.Format != models.FormatHTML {
 		app.clientError(w, http.StatusBadRequest, "unsupported format")
 		return
 	}
@@ -60,7 +79,7 @@ func (app *application) postClipping(w http.ResponseWriter, r *http.Request) {
 	payload := services.ClippingPayload{
 		ID:     id,
 		URL:    req.URL,
-		Format: req.Format,
+		Format: string(req.Format),
 		Email:  req.Email,
 	}
 	payloadJson, err := json.Marshal(payload)
@@ -92,17 +111,13 @@ func (app *application) postClipping(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// write to database
-	clipping, err := app.clippingModel.Insert(id, payload.Format)
+	clipping, err := app.clippingModel.Insert(id, req.Format)
 	if err != nil {
 		app.serverError(w, err)
 		return
 	}
 
 	// return immediately
-	type postClippingResponse struct {
-		ID     string `json:"id"`
-		Status string `json:"status"`
-	}
 	res := postClippingResponse{
 		ID:     id,
 		Status: clipping.Status,
@@ -114,6 +129,13 @@ func (app *application) postClipping(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// @Summary	Checks the status of a clipping job (and provides a download URL when ready)
+// @Produce	json
+// @Param		id	path		string	true	"Clipping ID"
+// @Success	200	{object}	getClippingResponse
+// @Failure	404	{object}	map[string]string
+// @Failure	500	{object}	map[string]string
+// @Router		/clippings/{id} [get]
 func (app *application) getClipping(w http.ResponseWriter, r *http.Request) {
 	// get url path
 	id := r.PathValue("id")
@@ -130,10 +152,10 @@ func (app *application) getClipping(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch clipping.Status {
-	case "completed":
+	case models.StatusCompleted:
 		presignedReq, err := app.s3PresignClient.PresignGetObject(r.Context(), &s3.GetObjectInput{
 			Bucket: aws.String(app.s3Bucket),
-			Key:    aws.String(id + "." + clipping.Format),
+			Key:    aws.String(id + "." + string(clipping.Format)),
 		}, func(opts *s3.PresignOptions) {
 			opts.Expires = time.Duration(1 * time.Hour)
 		})
@@ -142,19 +164,13 @@ func (app *application) getClipping(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		writeJSON(w, 200, nil, map[string]string{
-			"download_url": presignedReq.URL,
-		})
+		writeJSON(w, http.StatusOK, nil, getClippingResponse{DownloadURL: presignedReq.URL})
 		return
-	case "failed":
-		writeJSON(w, http.StatusInternalServerError, nil, map[string]string{
-			"status": "failed",
-		})
+	case models.StatusPending:
+		writeJSON(w, http.StatusOK, nil, getClippingResponse{Status: models.StatusPending})
 		return
-	case "pending":
-		writeJSON(w, http.StatusAccepted, nil, map[string]string{
-			"status": "pending",
-		})
+	case models.StatusFailed:
+		writeJSON(w, http.StatusOK, nil, getClippingResponse{Status: models.StatusFailed})
 		return
 	}
 }

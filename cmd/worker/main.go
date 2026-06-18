@@ -206,9 +206,10 @@ func main() {
 
 		err = clipper.HandleClipping(context.Background(), &payload)
 		if err != nil {
+			logger.Error("failed to handle clipping", "error", err.Error())
 			rabbitCh.Nack(d.DeliveryTag, false, false) // drop if fails (TODO)
 			// update status in database
-			err = clippingModel.Update(payload.ID, "failed")
+			err = clippingModel.Update(payload.ID, models.StatusFailed)
 			if err != nil {
 				logger.Error(err.Error())
 			}
@@ -216,7 +217,7 @@ func main() {
 		}
 		rabbitCh.Ack(d.DeliveryTag, false)
 		// update status in database
-		err = clippingModel.Update(payload.ID, "completed")
+		err = clippingModel.Update(payload.ID, models.StatusCompleted)
 		if err != nil {
 			logger.Error(err.Error())
 		}

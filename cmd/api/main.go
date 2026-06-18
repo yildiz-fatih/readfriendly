@@ -34,6 +34,9 @@ type application struct {
 	rabbitConnection *amqp.Connection
 }
 
+// @title			ReadFriendly API
+// @version		1.0
+// @description	Makes webpages friendly to read
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 

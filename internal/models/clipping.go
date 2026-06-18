@@ -6,10 +6,26 @@ import (
 	"time"
 )
 
+type ClippingFormat string
+
+const (
+	FormatPDF  ClippingFormat = "pdf"
+	FormatEPUB ClippingFormat = "epub"
+	FormatHTML ClippingFormat = "html"
+)
+
+type ClippingStatus string
+
+const (
+	StatusCompleted ClippingStatus = "completed"
+	StatusPending   ClippingStatus = "pending"
+	StatusFailed    ClippingStatus = "failed"
+)
+
 type Clipping struct {
 	ID      string
-	Status  string
-	Format  string
+	Status  ClippingStatus
+	Format  ClippingFormat
 	Created time.Time
 }
 
@@ -36,7 +52,7 @@ func (m *ClippingModel) Get(id string) (*Clipping, error) {
 	return &c, nil
 }
 
-func (m *ClippingModel) Insert(id string, format string) (*Clipping, error) {
+func (m *ClippingModel) Insert(id string, format ClippingFormat) (*Clipping, error) {
 	query := `INSERT INTO clippings (id, format)
 	VALUES ($1, $2)
 	RETURNING *`
@@ -50,7 +66,7 @@ func (m *ClippingModel) Insert(id string, format string) (*Clipping, error) {
 	return &clipping, nil
 }
 
-func (m *ClippingModel) Update(id string, status string) error {
+func (m *ClippingModel) Update(id string, status ClippingStatus) error {
 	query := `UPDATE clippings
 	SET status = $1
 	WHERE id = $2`

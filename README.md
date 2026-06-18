@@ -12,6 +12,10 @@ cp .env.example .env
 make up # runs on http://localhost:8080
 ```
 
+## API Documentation
+
+Swagger UI is available at `http://localhost:8080/docs`
+
 ## Development
 
 ```bash
@@ -22,3 +26,5 @@ make dev
 make run-api # runs on http://localhost:8080
 make run-worker
 ```
+
+If you change any Swagger annotations, run `make docs` to regenerate the Swagger docs before committing.

@@ -1,0 +1,113 @@
+definitions:
+  main.getClippingResponse:
+    properties:
+      download_url:
+        type: string
+      status:
+        $ref: '#/definitions/models.ClippingStatus'
+    type: object
+  main.postClippingRequest:
+    properties:
+      email:
+        description: optional
+        type: string
+      format:
+        $ref: '#/definitions/models.ClippingFormat'
+      url:
+        type: string
+    type: object
+  main.postClippingResponse:
+    properties:
+      id:
+        type: string
+      status:
+        $ref: '#/definitions/models.ClippingStatus'
+    type: object
+  models.ClippingFormat:
+    enum:
+    - pdf
+    - epub
+    - html
+    type: string
+    x-enum-varnames:
+    - FormatPDF
+    - FormatEPUB
+    - FormatHTML
+  models.ClippingStatus:
+    enum:
+    - completed
+    - pending
+    - failed
+    type: string
+    x-enum-varnames:
+    - StatusCompleted
+    - StatusPending
+    - StatusFailed
+info:
+  contact: {}
+  description: Makes webpages friendly to read
+  title: ReadFriendly API
+  version: "1.0"
+paths:
+  /clippings:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Clipping request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/main.postClippingRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/main.postClippingResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Queues a webpage to be clipped and delivered to an email address in
+        a specified format
+  /clippings/{id}:
+    get:
+      parameters:
+      - description: Clipping ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/main.getClippingResponse'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Checks the status of a clipping job (and provides a download URL when
+        ready)
+swagger: "2.0"
